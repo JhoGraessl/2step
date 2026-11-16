@@ -7,6 +7,10 @@ local last_2step_active_in_cycle = false
 local lcChargeStart = 0
 local lastBackfireTime = 0
 
+-- NUI State Tracking (verhindert NUI-Spam im Wait(0) Loop)
+local isNuiVisible = false
+local lastNuiState = ""
+
 local antilag_state_key = 'has_antilag_installed'
 local reverse = 0
 
@@ -17,7 +21,6 @@ local fxGroup = "veh_xs_vehicle_mods"
 local fxName_short = "veh_backfire"
 local fxGroup_short = "core"
 
--- Startet einen Timer, um den Grip nach dem Launch wieder zurückzusetzen
 local function startGripResetTimer(veh, originalLoss)
     local vehNetId = VehToNet(veh)
     CreateThread(function()
@@ -31,7 +34,6 @@ local function startGripResetTimer(veh, originalLoss)
     end)
 end
 
--- Setzt den Grip sicher auf den Ursprungswert zurück
 local function resetVehicleGrip(veh)
     if veh ~= 0 and DoesEntityExist(veh) and originalLowSpeedLoss ~= nil then
         SetVehicleHandlingFloat(veh, 'CHandlingData', 'fLowSpeedTractionLossMult', originalLowSpeedLoss)
@@ -41,13 +43,27 @@ local function resetVehicleGrip(veh)
     last_2step_active_in_cycle = false
 end
 
+local function updateNuiVisibility(show)
+    if isNuiVisible ~= show then
+        isNuiVisible = show
+        SendNUIMessage({
+            transactionType = 'toggleNUI',
+            display = show,
+            isEnabled = isAntiLagEnabled
+        })
+        if not show then
+            lastNuiState = ""
+        end
+    end
+end
+
 RegisterCommand("antilag", function()
     isAntiLagEnabled = not isAntiLagEnabled
     PlaySoundFrontend(-1, 'CONFIRM_BEEP', 'HUD_MINI_GAME_SOUNDSET', true)
 end, false)
 
 -- ===================================================================
--- HAUPT-THREAD (PRÜFUNG UND AUSFÜHRUNG)
+-- HAUPT-THREAD
 -- ===================================================================
 CreateThread(function()
     while true do
@@ -61,23 +77,25 @@ CreateThread(function()
             if is_installed then
                 sleep = 0
                 lastVeh = veh
-                SendNUIMessage({ transactionType = 'toggleNUI', display = true })
+                updateNuiVisibility(true)
 
                 local currentTime = GetGameTimer()
                 local RPM = GetVehicleCurrentRpm(veh)
                 local gear = GetVehicleCurrentGear(veh)
                 local is_2step_active_in_cycle = false
 
-                -- Originalen LowSpeedLoss-Wert einmalig speichern
                 if originalLowSpeedLoss == nil then
                     originalLowSpeedLoss = GetVehicleHandlingFloat(veh, 'CHandlingData', 'fLowSpeedTractionLossMult')
                 end
+
+                local shiftPressed = IsControlPressed(0, 21) or IsDisabledControlPressed(0, 21)
+                local gasOrBrakePressed = IsControlPressed(0, 71) or IsControlPressed(0, 72)
 
                 if gear ~= reverse and not IsEntityInAir(veh) then
                     -- *******************************************
                     -- ** LAUNCH CONTROL (2-STEP) LOGIK **
                     -- *******************************************
-                    if IsControlPressed(0, 21) and (IsControlPressed(1, 71) or IsControlPressed(1, 72)) and RPM < (Config.LaunchRPM / 8000.0) then
+                    if shiftPressed and gasOrBrakePressed then
                         is_2step_active_in_cycle = true
 
                         if lcChargeStart == 0 then
@@ -86,16 +104,13 @@ CreateThread(function()
 
                         SetVehicleHandbrake(veh, true)
 
-                        -- Grip während des Ladens auf Normalwert halten
                         if originalLowSpeedLoss ~= nil and GetVehicleHandlingFloat(veh, 'CHandlingData', 'fLowSpeedTractionLossMult') ~= originalLowSpeedLoss then
                             SetVehicleHandlingFloat(veh, 'CHandlingData', 'fLowSpeedTractionLossMult', originalLowSpeedLoss)
                         end
 
-                        -- Hardcut Limiter (läuft jeden Frame für saubere Drehzahlbegrenzung)
                         SetVehicleTurboPressure(veh, 25.0)
                         SetVehicleCurrentRpm(veh, Config.LaunchRPM / 8000.0)
 
-                        -- Flammen & Sound mit Cooldown (verhindert Netzwerk-Spam)
                         if currentTime - lastBackfireTime >= math.random(60, 140) then
                             lastBackfireTime = currentTime
                             TriggerServerEvent("short_flames", VehToNet(veh))
@@ -105,7 +120,7 @@ CreateThread(function()
                     -- *******************************************
                     -- ** NORMALE ANTILAG LOGIK **
                     -- *******************************************
-                    elseif isAntiLagEnabled and not IsControlPressed(1, 71) and RPM > Config.RPM then
+                    elseif isAntiLagEnabled and not IsControlPressed(0, 71) and RPM > Config.RPM then
                         lcChargeStart = 0
 
                         if currentTime - lastBackfireTime >= math.random(40, Config.explosionSpeed) then
@@ -138,37 +153,44 @@ CreateThread(function()
                 end
 
                 -- *******************************************
-                -- ** NUI STATUS & AUFRÄUMEN **
+                -- ** NUI STATUS (NUR BEI ZUSTANDSÄNDERUNG) **
                 -- *******************************************
                 if is_2step_active_in_cycle then
                     local chargeStatus = (currentTime - lcChargeStart) >= 2000
-                    SendNUIMessage({
-                        transactionType = 'set2StepStatus',
-                        status = true,
-                        isCharged = chargeStatus
-                    })
+                    local newState = chargeStatus and "LAUNCH_GREEN" or "LAUNCH_RED"
+
+                    if lastNuiState ~= newState then
+                        lastNuiState = newState
+                        SendNUIMessage({
+                            transactionType = 'set2StepStatus',
+                            status = true,
+                            isCharged = chargeStatus
+                        })
+                    end
                 else
-                    SendNUIMessage({
-                        transactionType = 'set2StepStatus',
-                        status = false,
-                        isEnabled = isAntiLagEnabled
-                    })
                     SetVehicleHandbrake(veh, false)
+                    local newState = isAntiLagEnabled and "ON" or "OFF"
+
+                    if lastNuiState ~= newState then
+                        lastNuiState = newState
+                        SendNUIMessage({
+                            transactionType = 'set2StepStatus',
+                            status = false,
+                            isEnabled = isAntiLagEnabled
+                        })
+                    end
                 end
 
-                -- Status für die nächste Iteration sauber speichern
                 last_2step_active_in_cycle = is_2step_active_in_cycle
             else
-                -- Im Auto, aber kein Kit installiert
-                SendNUIMessage({ transactionType = 'toggleNUI', display = false })
+                updateNuiVisibility(false)
                 if lastVeh ~= 0 then
                     resetVehicleGrip(lastVeh)
                     lastVeh = 0
                 end
             end
         else
-            -- Nicht auf dem Fahrersitz / ausgestiegen
-            SendNUIMessage({ transactionType = 'toggleNUI', display = false })
+            updateNuiVisibility(false)
             if lastVeh ~= 0 then
                 resetVehicleGrip(lastVeh)
                 lastVeh = 0
