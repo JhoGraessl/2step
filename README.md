@@ -62,7 +62,7 @@ end
 
 ### 4. Server Config
 
-Add `ensure v2rp-2step` (or your chosen folder name) to your `server.cfg`.
+Add `ensure 2step` (or your chosen folder name) to your `server.cfg`.
 
 ---
 
