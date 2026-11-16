@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.4/howler.min.js" type="text/javascript"></script>
+    <style>
+        body {
+            display: none;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        .show-nui {
+            display: block !important;
+        }
+
+        .status-box {
+            position: absolute;
+            bottom: 0%;
+            left: 41.1%;
+            transform: translateX(-50%);
+            font-size: 20px;
+            font-family: "Roboto Mono", monospace;
+            padding: 5px 10px;
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        #status-off {
+            background: linear-gradient(180deg, rgba(128,255,128,0) 0%, rgba(128,128,255,0.8) 100%);
+            color: rgb(175, 175, 175);
+            text-shadow: 0px 0px 2px black;
+        }
+
+        #status-on {
+            background: linear-gradient(180deg, rgba(128,255,128,0) 0%, rgba(128,128,255,0.8) 100%);
+            color: rgb(139, 250, 144);
+            font-weight: bold;
+            text-shadow: 0px 0px 2px black;
+        }
+
+        #status-launch {
+            background: linear-gradient(180deg, rgba(128,255,128,0) 0%, rgba(255, 255, 255, 0.8) 50%);
+            font-weight: bold;
+        }
+
+        .blinking-text {
+            animation: blinker 0.3s step-start infinite;
+        }
+
+        @keyframes blinker {
+            50% { opacity: 0.2; }
+        }
+    </style>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            let isAntilagEnabled = false;
+            const soundCache = {};
+
+            // Sounds einmalig vorladen, um Memory-Leaks und Audio-Lags zu vermeiden
+            const soundFiles = ['1', '2', '3', '4', '5', '6', '7', '8', '11', '12', '13', '14', '15', '16', '17', '18'];
+            soundFiles.forEach(name => {
+                soundCache[name] = new Howl({
+                    src: [`./sounds/${name}.ogg`],
+                    preload: true
+                });
+            });
+
+            function playOverlappingSound(fileName, volume) {
+                const sound = soundCache[String(fileName)];
+                if (sound) {
+                    const id = sound.play();
+                    sound.volume(volume, id);
+                }
+            }
+
+            function setStatusBox(targetId, isBlinking = false, eventData = {}) {
+                const boxes = ['status-off', 'status-on', 'status-launch'];
+                boxes.forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) {
+                        el.style.opacity = '0';
+                        el.classList.remove('blinking-text');
+                    }
+                });
+
+                const target = document.getElementById(targetId);
+                if (target) {
+                    target.style.opacity = '1';
+
+                    if (targetId === 'status-launch') {
+                        if (eventData.isCharged === true) {
+                            target.style.color = 'rgb(10, 180, 10)';
+                            target.style.textShadow = '0 0 8px rgb(255, 255, 255)';
+                        } else {
+                            target.style.color = 'rgb(255, 30, 30)';
+                            target.style.textShadow = '0 0 8px rgb(255, 0, 0)';
+                        }
+                    }
+
+                    if (isBlinking) {
+                        target.classList.add('blinking-text');
+                    }
+                }
+            }
+
+            window.addEventListener('message', function(event) {
+                const data = event.data;
+
+                if (data.transactionType === "playSound") {
+                    playOverlappingSound(data.transactionFile, data.transactionVolume);
+                }
+
+                if (data.transactionType === "toggleNUI") {
+                    if (data.display) {
+                        document.body.classList.add('show-nui');
+                        setStatusBox(isAntilagEnabled ? 'status-on' : 'status-off');
+                    } else {
+                        document.body.classList.remove('show-nui');
+                        setStatusBox('none');
+                    }
+                }
+
+                if (data.transactionType === "set2StepStatus") {
+                    if (data.isEnabled !== undefined) {
+                        isAntilagEnabled = data.isEnabled;
+                    }
+
+                    if (data.status) {
+                        setStatusBox('status-launch', true, data);
+                    } else {
+                        setStatusBox(isAntilagEnabled ? 'status-on' : 'status-off');
+                    }
+                }
+            });
+        });
+    </script>
+</head>
+<body>
+    <div id="status-off" class="status-box"><span>ANTILAG: OFF</span></div>
+    <div id="status-on" class="status-box"><span>ANTILAG: ON</span></div>
+    <div id="status-launch" class="status-box"><span>LAUNCH ACTIVE</span></div>
+</body>
+</html>
